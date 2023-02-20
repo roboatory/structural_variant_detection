@@ -1,0 +1,1 @@
+samtools view -h datasets/chr21.bam > datasets/chr21.sam (convert BAM file to SAM file with header information)
