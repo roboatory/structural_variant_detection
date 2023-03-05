@@ -93,6 +93,37 @@ def intra_alignment_extraction(bam_file, bed, variant = None, extension = 50):
         bed_file.close()
         return image_matrices
 
+def inter_alignment_extraction(bam_file, chromosome, duplication_factor = 2):
+    duplicate_reads = {}
+
+    sam_file = pysam.AlignmentFile(bam_file, "rb")
+    indexed_sam_file = pysam.IndexedReads(sam_file)
+    indexed_sam_file.build()
+
+    # fetch duplicate reads in BAM / SAM file
+    for read in sam_file.fetch(chromosome, until_eof = True):
+        duplicate_reads[read.query_name] = duplicate_reads.get(read.query_name, 0) + 1
+
+    for read_name, count in duplicate_reads.items():
+        if 1 < count <= duplication_factor:
+            reads = indexed_sam_file.find(read_name)
+
+            # extract metadata about each read's alignment
+            points_of_interest = [(read.reference_start, read.reference_start + read.query_length, 
+                                   read.query_alignment_start, read.query_alignment_end) for read in reads]
+            print(points_of_interest)
+
+            for index in range(len(points_of_interest) - 1):
+                first_segment = points_of_interest[index]
+                second_segment = points_of_interest[index + 1]
+
+                # utilize CuteSV heuristic for identifying deletion signatures
+                difference_distance = (second_segment[0] - first_segment[1]) - (second_segment[2] - first_segment[3])
+                difference_overlap = first_segment[1] - second_segment[0]
+
+                if difference_overlap < 30 and difference_distance >= 30:
+                    print(first_segment[1], difference_distance, read_name)
+
 def parse_vcf_file(vcf_file, chromosome):
     with open(vcf_file, "r") as file:
         contents = file.read()
@@ -125,11 +156,13 @@ def main():
     vcf_file = args.vcf
     images = args.images
 
-    variants = parse_vcf_file(vcf_file, chromosome)
+    # variants = parse_vcf_file(vcf_file, chromosome)
     
-    for variant in variants:
-        intra_variant_matrix = intra_alignment_extraction(bam_file, bed, variant)
-        visualize_alignments(bed, variant, images)
-        visualize_matrix(intra_variant_matrix, variant, images)
+    # for variant in variants:
+    #     intra_variant_matrix = intra_alignment_extraction(bam_file, bed, variant)
+    #     visualize_alignments(bed, variant, images)
+    #     visualize_matrix(intra_variant_matrix, variant, images)
+
+    inter_alignment_extraction(bam_file, chromosome)
 
 main()
