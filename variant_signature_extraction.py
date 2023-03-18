@@ -119,7 +119,6 @@ def visualize_alignments(images, bed, variant):
                                                                del_end_position), sep = "\t")
     read_alignments["HEIGHT"] = read_alignments.groupby("READ").ngroup() + 2
 
-    plt.figure()
     plt.plot([del_start_position, del_end_position], [1, 1], color = "blue")
     for _, row in read_alignments.iterrows():
         plt.plot([row["START"], row["END"]], [row["HEIGHT"], row["HEIGHT"]], 
@@ -133,7 +132,7 @@ def visualize_alignments(images, bed, variant):
     
     plt.savefig(images + "/signatures/{}_{}_{}.png".format(chromosome, del_start_position, 
                                                            del_end_position))
-    plt.close()
+    plt.clf()
 
 def encode_variant_as_matrix(bed, variant, extension = 50):
     variant_matrix = {}
@@ -158,19 +157,15 @@ def encode_variant_as_matrix(bed, variant, extension = 50):
                                            del_end_position), "r") as bed_file:
         _ = bed_file.readline() # ignore BED header information
 
-        # TODO: resolve bug somewhere down below (matrix does not resolve exactly to image)
-
         for read in bed_file:
             read = read.split("\t")
             read_vector = vectorize(int(read[1]), int(read[2]), read[4].rstrip())
             np.bitwise_or(variant_matrix.setdefault(read[3], np.array(read_vector)), 
-                          variant_matrix[read[3]], out = variant_matrix[read[3]])
+                          np.array(read_vector), out = variant_matrix[read[3]])
     
-    return np.array(list(variant_matrix.values()))
+    return np.matrix(list(variant_matrix.values())).astype(float)
 
 def visualize_matrix_encoding(images, variant_matrix, variant):
-    print(variant_matrix)
-
     chromosome = variant[0]
     del_start_position = variant[1]
     del_end_position = variant[1] + variant[2]
@@ -178,8 +173,7 @@ def visualize_matrix_encoding(images, variant_matrix, variant):
     # white - no alignment, orange - intra-alignment, green - inter-alignment
     color_map = colors.ListedColormap(["white", "orange", "green"])
 
-    plt.figure()
-    plt.matshow(variant_matrix, cmap = color_map)
+    plt.matshow(variant_matrix, cmap = color_map, vmin = 0., vmax = 2.)
     plt.tick_params(left = False, bottom = False, top = False, 
                     labelleft = False, labeltop = False)
 
