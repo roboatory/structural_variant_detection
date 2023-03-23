@@ -8,13 +8,13 @@ import re
 
 def parse_vcf_file(vcf_file, chromosome):
     with open(vcf_file, "r") as file:
-        contents = file.read()
+        contents = file.readlines()
 
         # chromosome_filter is a list of sigs of the form [(chromosome_number, start_position, length)]
-        chromosome_filter = re.findall(r"\n{}.*\n".format(chromosome), contents)
+        chromosome_filter = [line for line in contents if line.startswith(chromosome)]
         chromosome_filter = [variant.strip().split("\t") for variant in chromosome_filter]
         chromosome_filter = [(variant[0], int(variant[1]), int(re.findall(r"SVLEN=-?(\d+)", 
-                                variant[-3])[0])) for variant in chromosome_filter] 
+                              variant[-3])[0])) for variant in chromosome_filter]
         
         return chromosome_filter
 
@@ -184,11 +184,11 @@ def visualize_matrix_encoding(images, variant_matrix, variant):
 def parse_args():
     parser = ArgumentParser(description = "intra-alignment deletion signature extraction")
 
-    parser.add_argument("-b", "--bam", default = "datasets/chr21.bam", help = "user-supplied BAM file (default: datasets/chr21.bam)")
+    parser.add_argument("-b", "--bam", default = "data/chr21.bam", help = "user-supplied BAM file (default: data/chr21.bam)")
     parser.add_argument("-c", "--chromosome", default = "chr21", help = "limits signature extraction to a particular chromosome (default: chr21)")
-    parser.add_argument("-d", "--bed", default = "datasets/bed", help = "output BED directory (default: datasets/bed)")
-    parser.add_argument("-i", "--images", default = "datasets/images", help = "output image directory (default: datasetes/images")
-    parser.add_argument("-v", "--vcf", default = "datasets/fp.vcf", help = "user-supplied VCF file (default: datasets/fp.vcf)")
+    parser.add_argument("-d", "--bed", default = "data/bed", help = "output BED directory (default: data/bed)")
+    parser.add_argument("-i", "--images", default = "data/images", help = "output image directory (default: data/images")
+    parser.add_argument("-v", "--vcf", default = "data/fp.vcf", help = "user-supplied VCF file (default: data/fp.vcf)")
 
     return parser.parse_args()
 
