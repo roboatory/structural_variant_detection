@@ -164,7 +164,8 @@ def visualize_alignments(variant_type, images, bed, variant):
                                                            variant_end_position))
     plt.clf()
 
-def encode_variant_as_matrix(variant_type, bed, variant, extension = 50):
+def encode_variant_as_matrix(variant_type, bed, variant, normalize_by_padding = False, 
+                             normalized_width = 10000, normalized_height = 60, extension = 50):
     variant_matrix = {}
 
     chromosome = variant[0]
@@ -193,7 +194,45 @@ def encode_variant_as_matrix(variant_type, bed, variant, extension = 50):
             np.bitwise_or(variant_matrix.setdefault(read[3], np.array(read_vector)), 
                           np.array(read_vector), out = variant_matrix[read[3]])
     
-    return np.matrix(list(variant_matrix.values())).astype(float)
+    matrix = np.matrix(list(variant_matrix.values())).astype(float)
+
+    if normalize_by_padding:
+        unnormalized_rows = np.shape(matrix)[0]
+        unnormalized_columns = np.shape(matrix)[1]
+
+        total_vertical_padding = normalized_height - unnormalized_rows
+        vertical_padding_per_side = total_vertical_padding // 2
+        vertical_padding_per_side = ((vertical_padding_per_side, vertical_padding_per_side + 1) if total_vertical_padding % 2 != 0 else
+                                     (vertical_padding_per_side, vertical_padding_per_side))
+
+        total_horizontal_padding = normalized_width - unnormalized_columns
+        horizontal_padding_per_side = total_horizontal_padding // 2
+        horizontal_padding_per_side = ((horizontal_padding_per_side, horizontal_padding_per_side + 1) if total_horizontal_padding % 2 != 0 else
+                                       (horizontal_padding_per_side, horizontal_padding_per_side))
+        
+        if total_horizontal_padding >= 0 and total_vertical_padding >= 0:    
+            matrix = np.pad(matrix, (vertical_padding_per_side, horizontal_padding_per_side))
+
+        elif total_horizontal_padding >= 0:
+            matrix = np.pad(matrix, ((0, 0), horizontal_padding_per_side))
+            matrix = matrix[abs(vertical_padding_per_side[1]) : 
+                            abs(vertical_padding_per_side[1]) + normalized_height, :]
+
+        elif total_vertical_padding >= 0:
+            matrix = np.pad(matrix, (vertical_padding_per_side, (0, 0)))
+            matrix = matrix[:, abs(horizontal_padding_per_side[1]) : 
+                            abs(horizontal_padding_per_side[1]) + normalized_width]
+
+        else:
+            matrix = matrix[abs(vertical_padding_per_side[1]) : 
+                            abs(vertical_padding_per_side[1]) + normalized_height, :]
+            matrix = matrix[:, abs(horizontal_padding_per_side[1]) : 
+                            abs(horizontal_padding_per_side[1]) + normalized_width]
+
+        assert(np.shape(matrix)[0] == normalized_height)
+        assert(np.shape(matrix)[1] == normalized_width)
+
+    return matrix
 
 def visualize_matrix_encoding(images, variant_matrix, variant):
     chromosome = variant[0]
@@ -218,6 +257,7 @@ def parse_args():
     parser.add_argument("-c", "--chromosome", default = "chr21", help = "limits signature extraction to a particular chromosome (default: chr21)")
     parser.add_argument("-d", "--bed", default = "data/bed", help = "output BED directory (default: data/bed)")
     parser.add_argument("-i", "--images", default = "data/images", help = "output image directory (default: data/images")
+    parser.add_argument("-t", "--type", default = "DEL", choices = ["DEL", "INS"], help = "structural variant type (default: DEL)")
     parser.add_argument("-v", "--vcf", default = "data/fp.vcf", help = "user-supplied VCF file (default: data/fp.vcf)")
 
     return parser.parse_args()
@@ -226,18 +266,19 @@ def main():
     args = parse_args()
 
     bam_file = args.bam
-    bed = args.bed
     chromosome = args.chromosome
-    vcf_file = args.vcf
+    bed = args.bed
     images = args.images
-
+    variant_type = args.type
+    vcf_file = args.vcf
+    
     variants = parse_vcf_file(vcf_file, chromosome)
-    split_read_signatures = fetch_split_alignments("INS", bam_file, chromosome)
+    split_read_signatures = fetch_split_alignments(variant_type, bam_file, chromosome)
     
     for variant in variants:
-        intra_alignment_extraction("INS", bam_file, bed, variant)
-        inter_alignment_extraction("INS", split_read_signatures, bed, variant)
-        visualize_alignments("INS", images, bed, variant)
-        visualize_matrix_encoding(images, encode_variant_as_matrix("INS", bed, variant), variant)
+        intra_alignment_extraction(variant_type, bam_file, bed, variant)
+        inter_alignment_extraction(variant_type, split_read_signatures, bed, variant)
+        visualize_alignments(variant_type, images, bed, variant)
+        visualize_matrix_encoding(images, encode_variant_as_matrix(variant_type, bed, variant, True), variant)
 
 main()
