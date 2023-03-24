@@ -13,14 +13,16 @@ def parse_vcf_file(vcf_file, chromosome):
         # chromosome_filter is a list of sigs of the form [(chromosome_number, start_position, length)]
         chromosome_filter = [line for line in contents if line.startswith(chromosome)]
         chromosome_filter = [variant.strip().split("\t") for variant in chromosome_filter]
-        chromosome_filter = [(variant[0], int(variant[1]), int(re.findall(r"SVLEN=-?(\d+)", 
+        chromosome_filter = [(variant[0], int(variant[1]), int(re.findall(r"SVLEN=-*?(\d+)", 
                               variant[-3])[0])) for variant in chromosome_filter]
         
         return chromosome_filter
 
-def fetch_split_alignments(bam_file, chromosome, duplication_factor = 2, variant_cap = 100000):
+def fetch_split_alignments(variant_type, bam_file, chromosome, duplication_factor = 2, variant_cap = 100000):
+    # TODO: possibly handle read orientation?
+
     duplicate_reads = {}
-    deletion_signatures = []
+    signatures = []
 
     sam_file = pysam.AlignmentFile(bam_file, "rb")
     indexed_sam_file = pysam.IndexedReads(sam_file)
@@ -41,24 +43,33 @@ def fetch_split_alignments(bam_file, chromosome, duplication_factor = 2, variant
                 first_segment = points_of_interest[index]
                 second_segment = points_of_interest[index + 1]
 
-                # utilize CuteSV heuristic for identifying deletion signatures
+                # utilize CuteSV heuristic for identifying deletion / insertion signatures
                 difference_distance = (second_segment[0] - first_segment[1]) - (second_segment[2] - first_segment[3])
                 difference_overlap = first_segment[1] - second_segment[0]
 
                 # compose deletion signature as identified by split alignment
-                if difference_overlap < 30 and 30 <= difference_distance <= variant_cap:
-                    deletion_signatures.append((first_segment[1], difference_distance, read_name))
-    
-    return deletion_signatures
+                if variant_type == "DEL":
+                    if difference_overlap < 30 and 30 <= difference_distance <= variant_cap:
+                        signatures.append((first_segment[1], difference_distance, read_name))
+                
+                # compose insertion signature as identified by split alignment
+                elif variant_type == "INS":
+                    if difference_overlap < 30 and -1 * variant_cap <= difference_distance <= -30:
+                        signatures.append(((first_segment[1] + second_segment[0]) // 2, -1 * difference_distance, read_name))
 
-def intra_alignment_extraction(bam_file, bed, variant = None, extension = 50):
+                else:
+                    raise ValueError("unsupported variant type provided")
+    
+    return signatures
+
+def intra_alignment_extraction(variant_type, bam_file, bed, variant = None, extension = 50):
     # if user supplies VCF file, parse sig contents (defined below)
     if variant:
         chromosome = variant[0]
-        del_start_position = variant[1]
-        del_end_position = variant[1] + variant[2]
+        variant_start_position = variant[1]
+        variant_end_position = variant[1] + variant[2]
 
-        bed_file = open(bed + "/{}_{}_{}.bed".format(chromosome, del_start_position, del_end_position), "w")
+        bed_file = open(bed + "/{}_{}_{}.bed".format(chromosome, variant_start_position, variant_end_position), "w")
         bed_file.write("{}\t{}\t{}\t{}\t{}\n".format("CHROMOSOME", "START", "END", "READ", "TYPE"))
 
         sam_file = pysam.AlignmentFile(bam_file, "rb")
@@ -69,22 +80,41 @@ def intra_alignment_extraction(bam_file, bed, variant = None, extension = 50):
             read_end = read_start + read.query_length
 
             # check for overlap between read and proposed variant in VCF file
-            if max(read_start, del_start_position) <= min(read_end, del_end_position):
+            if max(read_start, variant_start_position) <= min(read_end, variant_end_position):
                 current_read_position = read_start
                 cigar_string = read.cigartuples
 
                 for op, length in cigar_string:
-                    if op == 2: # "D"
-                        # check for overlap between CIGAR deletion and proposed variant in VCF file
-                        if (max(current_read_position, del_start_position - extension) <= 
-                            min(current_read_position + length, del_end_position + extension)):
-                            bed_file.write(chromosome + "\t" + str(current_read_position) + "\t" + str(current_read_position 
-                                           + length) + "\t" + read.query_name + "\t" + "INTRA_DEL" + "\n")
-                            
-                        current_read_position += length
+                    if variant_type == "DEL":
+                        if op == 0: # "M"
+                            current_read_position += length
 
-                    elif op == 0: # "M"
-                        current_read_position += length
+                        elif op == 2: # "D"
+                            # check for overlap between CIGAR deletion and proposed variant in VCF file
+                            if (max(current_read_position, variant_start_position - extension) <= 
+                                min(current_read_position + length, variant_end_position + extension)):
+                                bed_file.write(chromosome + "\t" + str(current_read_position) + "\t" + str(current_read_position 
+                                               + length) + "\t" + read.query_name + "\t" + "INTRA_DEL" + "\n")
+                                
+                            current_read_position += length                            
+                    
+                    elif variant_type == "INS":
+                        if op == 0: # "M"
+                            current_read_position += length
+                        
+                        elif op == 1: # "I"
+                            if (max(current_read_position, variant_start_position - extension) <= 
+                                min(current_read_position + length, variant_end_position + extension)):
+                                bed_file.write(chromosome + "\t" + str(current_read_position) + "\t" + str(current_read_position 
+                                               + length) + "\t" + read.query_name + "\t" + "INTRA_INS" + "\n")
+                            
+                            current_read_position += length
+
+                        elif op == 2: # "D"
+                            current_read_position += length
+
+                    else:
+                        raise ValueError("unsupported variant type provided")
 
         bed_file.close()
     
@@ -92,37 +122,37 @@ def intra_alignment_extraction(bam_file, bed, variant = None, extension = 50):
         # TODO: add logic to handle this case by parsing BAM directly
         raise FileNotFoundError("VCF file was not supplied")
 
-def inter_alignment_extraction(split_read_deletion_signatures, bed, variant = None, extension = 50):
+def inter_alignment_extraction(variant_type, split_read_signatures, bed, variant = None, extension = 50):
     chromosome = variant[0]
-    del_start_position = variant[1]
-    del_end_position = variant[1] + variant[2]
+    variant_start_position = variant[1]
+    variant_end_position = variant[1] + variant[2]
 
-    bed_file = open(bed + "/{}_{}_{}.bed".format(chromosome, del_start_position, del_end_position), "a")
+    bed_file = open(bed + "/{}_{}_{}.bed".format(chromosome, variant_start_position, variant_end_position), "a")
 
-    for deletion_signature in split_read_deletion_signatures:
-        signature_interval = (deletion_signature[0], deletion_signature[0] + deletion_signature[1])
+    for signature in split_read_signatures:
+        signature_interval = (signature[0], signature[0] + signature[1])
 
         # determine whether variant and signature intervals overlap
-        if (max(del_start_position - extension, signature_interval[0]) <= 
-            min(del_end_position + extension, signature_interval[1])):
+        if (max(variant_start_position - extension, signature_interval[0]) <= 
+            min(variant_end_position + extension, signature_interval[1])):
             bed_file.write(chromosome + "\t" + str(signature_interval[0]) + "\t" + str(signature_interval[1]) + 
-                           "\t" + deletion_signature[2] + "\t" + "INTER_DEL" + "\n")
+                           "\t" + signature[2] + "\t" + "INTER_{}".format(variant_type) + "\n")
     
     bed_file.close()
 
-def visualize_alignments(images, bed, variant):
+def visualize_alignments(variant_type, images, bed, variant):
     chromosome = variant[0]
-    del_start_position = variant[1]
-    del_end_position = variant[1] + variant[2]
+    variant_start_position = variant[1]
+    variant_end_position = variant[1] + variant[2]
     
-    read_alignments = pd.read_csv(bed + "/{}_{}_{}.bed".format(chromosome, del_start_position, 
-                                                               del_end_position), sep = "\t")
+    read_alignments = pd.read_csv(bed + "/{}_{}_{}.bed".format(chromosome, variant_start_position, 
+                                                               variant_end_position), sep = "\t")
     read_alignments["HEIGHT"] = read_alignments.groupby("READ").ngroup() + 2
 
-    plt.plot([del_start_position, del_end_position], [1, 1], color = "blue")
+    plt.plot([variant_start_position, variant_end_position], [1, 1], color = "blue")
     for _, row in read_alignments.iterrows():
         plt.plot([row["START"], row["END"]], [row["HEIGHT"], row["HEIGHT"]], 
-                 color = "orange" if row["TYPE"] == "INTRA_DEL" else "green")
+                 color = "orange" if row["TYPE"] == "INTRA_{}".format(variant_type) else "green")
     
     plt.xticks(rotation = "vertical")
     plt.tick_params(left = False, labelleft = False)
@@ -130,31 +160,31 @@ def visualize_alignments(images, bed, variant):
     
     plt.tight_layout()
     
-    plt.savefig(images + "/signatures/{}_{}_{}.png".format(chromosome, del_start_position, 
-                                                           del_end_position))
+    plt.savefig(images + "/signatures/{}_{}_{}.png".format(chromosome, variant_start_position, 
+                                                           variant_end_position))
     plt.clf()
 
-def encode_variant_as_matrix(bed, variant, extension = 50):
+def encode_variant_as_matrix(variant_type, bed, variant, extension = 50):
     variant_matrix = {}
 
     chromosome = variant[0]
-    del_start_position = variant[1]
-    del_end_position = variant[1] + variant[2]
+    variant_start_position = variant[1]
+    variant_end_position = variant[1] + variant[2]
 
     def vectorize(read_start, read_end, extraction):
-        read_vector = [0] * ((del_end_position - del_start_position) + 2 * extension)
+        read_vector = [0] * ((variant_end_position - variant_start_position) + 2 * extension)
 
-        start_mask = max(del_start_position - extension, read_start) - (del_start_position - extension)
-        end_mask = min(del_end_position + extension, read_end) - (del_start_position - extension)
+        start_mask = max(variant_start_position - extension, read_start) - (variant_start_position - extension)
+        end_mask = min(variant_end_position + extension, read_end) - (variant_start_position - extension)
 
-        mask = ([1] * (end_mask - start_mask) if extraction == "INTRA_DEL" else 
-                [2] * (end_mask - start_mask))
+        mask = ([1] * (end_mask - start_mask) if extraction == "INTRA_{}".
+                format(variant_type) else [2] * (end_mask - start_mask))
         
         read_vector[start_mask : end_mask] = mask
         return read_vector
 
-    with open(bed + "/{}_{}_{}.bed".format(chromosome, del_start_position, 
-                                           del_end_position), "r") as bed_file:
+    with open(bed + "/{}_{}_{}.bed".format(chromosome, variant_start_position, 
+                                           variant_end_position), "r") as bed_file:
         _ = bed_file.readline() # ignore BED header information
 
         for read in bed_file:
@@ -167,8 +197,8 @@ def encode_variant_as_matrix(bed, variant, extension = 50):
 
 def visualize_matrix_encoding(images, variant_matrix, variant):
     chromosome = variant[0]
-    del_start_position = variant[1]
-    del_end_position = variant[1] + variant[2]
+    variant_start_position = variant[1]
+    variant_end_position = variant[1] + variant[2]
 
     # white - no alignment, orange - intra-alignment, green - inter-alignment
     color_map = colors.ListedColormap(["white", "orange", "green"])
@@ -177,8 +207,8 @@ def visualize_matrix_encoding(images, variant_matrix, variant):
     plt.tick_params(left = False, bottom = False, top = False, 
                     labelleft = False, labeltop = False)
 
-    plt.savefig(images + "/matrices/{}_{}_{}.png".format(chromosome, del_start_position, 
-                                                         del_end_position))
+    plt.savefig(images + "/matrices/{}_{}_{}.png".format(chromosome, variant_start_position, 
+                                                         variant_end_position))
     plt.close()
 
 def parse_args():
@@ -202,12 +232,12 @@ def main():
     images = args.images
 
     variants = parse_vcf_file(vcf_file, chromosome)
-    split_read_deletion_signatures = fetch_split_alignments(bam_file, chromosome)
+    split_read_signatures = fetch_split_alignments("INS", bam_file, chromosome)
     
     for variant in variants:
-        intra_alignment_extraction(bam_file, bed, variant)
-        inter_alignment_extraction(split_read_deletion_signatures, bed, variant)
-        visualize_alignments(images, bed, variant)
-        visualize_matrix_encoding(images, encode_variant_as_matrix(bed, variant), variant)
+        intra_alignment_extraction("INS", bam_file, bed, variant)
+        inter_alignment_extraction("INS", split_read_signatures, bed, variant)
+        visualize_alignments("INS", images, bed, variant)
+        visualize_matrix_encoding(images, encode_variant_as_matrix("INS", bed, variant), variant)
 
 main()
