@@ -1,4 +1,4 @@
-from argparse import ArgumentParser
+import argparse
 import matplotlib.colors as colors
 import matplotlib.pyplot as plt
 import numpy as np
@@ -19,8 +19,6 @@ def parse_vcf_file(vcf_file, chromosome):
         return chromosome_filter
 
 def fetch_split_alignments(variant_type, bam_file, chromosome, duplication_factor = 2, variant_cap = 100000):
-    # TODO: possibly handle read orientation?
-
     duplicate_reads = {}
     signatures = []
 
@@ -36,29 +34,47 @@ def fetch_split_alignments(variant_type, bam_file, chromosome, duplication_facto
         if 1 < count <= duplication_factor:
             reads = indexed_sam_file.find(read_name)
 
-            points_of_interest = [(read.reference_start, read.reference_start + read.query_length, 
-                                   read.query_alignment_start, read.query_alignment_end) for read in reads]
+            points_of_interest = []
+
+            for read in reads:
+                bias = 0
+                for cigar in read.cigartuples:
+                    if (cigar[0] == 0 or cigar[0] == 2 or 
+                        cigar[0] == 7 or cigar[0] == 8): # M or D or = or X
+                        bias += cigar[1]
+
+                orientation = "+" if read.is_forward else "-"
+
+                points_of_interest.append((read.reference_start, read.reference_start + bias,
+                                           read.query_alignment_start, read.query_alignment_end, orientation))
+
+            # TODO: compare with CuteSV (read.reference_start + read.query_length seems to be off)
+            # points_of_interest = [(read.reference_start, read.reference_start + read.query_length, 
+            #                        read.query_alignment_start, read.query_alignment_end) for read in reads]
+            
+            # print("Points of interest: {}".format(points_of_interest))
             
             for index in range(len(points_of_interest) - 1):
                 first_segment = points_of_interest[index]
                 second_segment = points_of_interest[index + 1]
 
-                # utilize CuteSV heuristic for identifying deletion / insertion signatures
-                difference_distance = (second_segment[0] - first_segment[1]) - (second_segment[2] - first_segment[3])
-                difference_overlap = first_segment[1] - second_segment[0]
+                if first_segment[4] == second_segment[4]: # do the reads have the same orientation?
+                    # utilize CuteSV heuristic for identifying deletion / insertion signatures
+                    difference_distance = (second_segment[0] - first_segment[1]) - (second_segment[2] - first_segment[3])
+                    difference_overlap = first_segment[1] - second_segment[0]
 
-                # compose deletion signature as identified by split alignment
-                if variant_type == "DEL":
-                    if difference_overlap < 30 and 30 <= difference_distance <= variant_cap:
-                        signatures.append((first_segment[1], difference_distance, read_name))
-                
-                # compose insertion signature as identified by split alignment
-                elif variant_type == "INS":
-                    if difference_overlap < 30 and -1 * variant_cap <= difference_distance <= -30:
-                        signatures.append(((first_segment[1] + second_segment[0]) // 2, -1 * difference_distance, read_name))
+                    # compose deletion signature as identified by split alignment
+                    if variant_type == "DEL":
+                        if difference_overlap < 30 and 30 <= difference_distance <= variant_cap:
+                            signatures.append((first_segment[1], difference_distance, read_name))
+                    
+                    # compose insertion signature as identified by split alignment
+                    elif variant_type == "INS":
+                        if difference_overlap < 30 and -1 * variant_cap <= difference_distance <= -30:
+                            signatures.append(((first_segment[1] + second_segment[0]) // 2, -1 * difference_distance, read_name))
 
-                else:
-                    raise ValueError("unsupported variant type provided")
+                    else:
+                        raise ValueError("unsupported variant type provided")
     
     return signatures
 
@@ -251,7 +267,7 @@ def visualize_matrix_encoding(images, variant_matrix, variant):
     plt.close()
 
 def parse_args():
-    parser = ArgumentParser(description = "intra-alignment deletion signature extraction")
+    parser = argparse.ArgumentParser(description = "intra-alignment deletion signature extraction")
 
     parser.add_argument("-b", "--bam", default = "data/chr21.bam", help = "user-supplied BAM file (default: data/chr21.bam)")
     parser.add_argument("-c", "--chromosome", default = "chr21", help = "limits signature extraction to a particular chromosome (default: chr21)")
@@ -259,6 +275,8 @@ def parse_args():
     parser.add_argument("-i", "--images", default = "data/images", help = "output image directory (default: data/images")
     parser.add_argument("-t", "--type", default = "DEL", choices = ["DEL", "INS"], help = "structural variant type (default: DEL)")
     parser.add_argument("-v", "--vcf", default = "data/fp.vcf", help = "user-supplied VCF file (default: data/fp.vcf)")
+
+    parser.add_argument("--normalize", default = True, action = argparse.BooleanOptionalAction, help = "normalize matrices to a fixed width and height (default: True)")
 
     return parser.parse_args()
 
@@ -271,14 +289,18 @@ def main():
     images = args.images
     variant_type = args.type
     vcf_file = args.vcf
+    normalize = args.normalize
     
     variants = parse_vcf_file(vcf_file, chromosome)
     split_read_signatures = fetch_split_alignments(variant_type, bam_file, chromosome)
     
     for variant in variants:
+        print("Analyzing variant on {} with start position {} and end position {}".format(variant[0], variant[1], 
+                                                                                          variant[1] + variant[2]))
+        
         intra_alignment_extraction(variant_type, bam_file, bed, variant)
         inter_alignment_extraction(variant_type, split_read_signatures, bed, variant)
         visualize_alignments(variant_type, images, bed, variant)
-        visualize_matrix_encoding(images, encode_variant_as_matrix(variant_type, bed, variant, True), variant)
+        visualize_matrix_encoding(images, encode_variant_as_matrix(variant_type, bed, variant, normalize), variant)
 
 main()
