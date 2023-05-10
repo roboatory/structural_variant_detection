@@ -1,10 +1,15 @@
 import argparse
+import matplotlib
 import matplotlib.colors as colors
 import matplotlib.pyplot as plt
 import numpy as np
+import os
 import pandas as pd
 import pysam
 import re
+from threading import Thread
+
+matplotlib.use("agg")
 
 def parse_vcf_file(vcf_file, chromosome):
     with open(vcf_file, "r") as file:
@@ -18,14 +23,13 @@ def parse_vcf_file(vcf_file, chromosome):
         
         return chromosome_filter
 
-def fetch_split_alignments(variant_type, bam_file, chromosome, duplication_factor = 2, variant_cap = 100000):
+def fetch_split_alignments(variant_type, chromosome, cache, duplication_factor = 2, variant_cap = 100000):
     duplicate_reads = {}
     signatures = []
 
-    sam_file = pysam.AlignmentFile(bam_file, "rb")
-    indexed_sam_file = pysam.IndexedReads(sam_file)
-    indexed_sam_file.build()
-
+    sam_file = cache[0]
+    indexed_sam_file = cache[1]
+    
     # fetch duplicate reads in BAM / SAM file
     for read in sam_file.fetch(chromosome, until_eof = True):
         duplicate_reads[read.query_name] = duplicate_reads.get(read.query_name, 0) + 1
@@ -45,20 +49,15 @@ def fetch_split_alignments(variant_type, bam_file, chromosome, duplication_facto
 
                 orientation = "+" if read.is_forward else "-"
 
-                points_of_interest.append((read.reference_start, read.reference_start + bias,
-                                           read.query_alignment_start, read.query_alignment_end, orientation))
-
-            # TODO: compare with CuteSV (read.reference_start + read.query_length seems to be off)
-            # points_of_interest = [(read.reference_start, read.reference_start + read.query_length, 
-            #                        read.query_alignment_start, read.query_alignment_end) for read in reads]
-            
-            # print("Points of interest: {}".format(points_of_interest))
+                points_of_interest.append((read.reference_start, read.reference_start + bias, read.query_alignment_start, 
+                                           read.query_alignment_end, orientation, read.reference_name))
             
             for index in range(len(points_of_interest) - 1):
                 first_segment = points_of_interest[index]
                 second_segment = points_of_interest[index + 1]
-
-                if first_segment[4] == second_segment[4]: # do the reads have the same orientation?
+                
+                # do the reads have the same orientation / are on the same chromosome?
+                if first_segment[4] == second_segment[4] and first_segment[5] == second_segment[5] == chromosome:
                     # utilize CuteSV heuristic for identifying deletion / insertion signatures
                     difference_distance = (second_segment[0] - first_segment[1]) - (second_segment[2] - first_segment[3])
                     difference_overlap = first_segment[1] - second_segment[0]
@@ -269,10 +268,11 @@ def visualize_matrix_encoding(images, variant_matrix, variant):
 def parse_args():
     parser = argparse.ArgumentParser(description = "intra-alignment deletion signature extraction")
 
-    parser.add_argument("-b", "--bam", default = "data/chr21.bam", help = "user-supplied BAM file (default: data/chr21.bam)")
-    parser.add_argument("-c", "--chromosome", default = "chr21", help = "limits signature extraction to a particular chromosome (default: chr21)")
+    parser.add_argument("-b", "--bam", default = "data/chr21.bam", help = "user-supplied BAM file; use the keyword 'all' for the entire genome (default: data/chr21.bam)")
+    parser.add_argument("-c", "--chromosomes", default = "chr21", help = "limits signature extraction to particular chromosomes; \
+                                                                          specify as a comma separated list or using the keyword 'all' for the entire genome (default: chr21)")
     parser.add_argument("-d", "--bed", default = "data/bed", help = "output BED directory (default: data/bed)")
-    parser.add_argument("-i", "--images", default = "data/images", help = "output image directory (default: data/images")
+    parser.add_argument("-i", "--images", default = "data/images", help = "output image directory (default: data/images)")
     parser.add_argument("-t", "--type", default = "DEL", choices = ["DEL", "INS"], help = "structural variant type (default: DEL)")
     parser.add_argument("-v", "--vcf", default = "data/fp.vcf", help = "user-supplied VCF file (default: data/fp.vcf)")
 
@@ -280,27 +280,52 @@ def parse_args():
 
     return parser.parse_args()
 
-def main():
-    args = parse_args()
+def launch_chromosome_extraction(bam_file, chromosome, base_bed, base_images, 
+                                 variant_type, vcf_file, normalize, cache):
+    bed = os.path.join(base_bed, chromosome)
+    images = os.path.join(base_images, chromosome)
 
-    bam_file = args.bam
-    chromosome = args.chromosome
-    bed = args.bed
-    images = args.images
-    variant_type = args.type
-    vcf_file = args.vcf
-    normalize = args.normalize
-    
+    os.makedirs(bed, exist_ok = True)
+    os.makedirs(os.path.join(images, "matrices"), exist_ok = True)
+    os.makedirs(os.path.join(images, "signatures"), exist_ok = True)
+
     variants = parse_vcf_file(vcf_file, chromosome)
-    split_read_signatures = fetch_split_alignments(variant_type, bam_file, chromosome)
+    split_read_signatures = fetch_split_alignments(variant_type, chromosome, cache)
     
     for variant in variants:
-        print("Analyzing variant on {} with start position {} and end position {}".format(variant[0], variant[1], 
+        print("analyzing variant on {} with start position {} and end position {}".format(variant[0], variant[1], 
                                                                                           variant[1] + variant[2]))
         
         intra_alignment_extraction(variant_type, bam_file, bed, variant)
         inter_alignment_extraction(variant_type, split_read_signatures, bed, variant)
         visualize_alignments(variant_type, images, bed, variant)
         visualize_matrix_encoding(images, encode_variant_as_matrix(variant_type, bed, variant, normalize), variant)
+
+def main():
+    args = parse_args()
+
+    bam_file = args.bam
+    chromosomes = (["chr{}".format(chromosome_number) for chromosome_number in range(1, 23)] 
+                        if args.chromosomes == "all" else args.chromosomes.split(","))
+    base_bed = args.bed
+    base_images = args.images
+    variant_type = args.type
+    vcf_file = args.vcf
+    normalize = args.normalize
+
+    sam_file = pysam.AlignmentFile(bam_file, "rb")
+    indexed_sam_file = pysam.IndexedReads(sam_file)
+    indexed_sam_file.build()
+
+    cache = [sam_file, indexed_sam_file]
+
+    chromosome_threads = []
+    for chromosome in chromosomes:
+        chromosome_threads.append(Thread(target = launch_chromosome_extraction, args = (bam_file, chromosome, base_bed, base_images, 
+                                                                                        variant_type, vcf_file, normalize, cache)))
+        chromosome_threads[-1].start()
+    
+    for chromosome_thread in chromosome_threads:
+        chromosome_thread.join()        
 
 main()
