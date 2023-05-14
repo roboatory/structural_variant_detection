@@ -273,10 +273,9 @@ def parse_args():
                                                                           specify as a comma separated list or using the keyword 'all' for the entire genome (default: chr21)")
     parser.add_argument("-d", "--bed", default = "data/bed", help = "output BED directory (default: data/bed)")
     parser.add_argument("-i", "--images", default = "data/images", help = "output image directory (default: data/images)")
+    parser.add_argument("-n", "--normalize", action = "store_true", help = "normalize matrices to a fixed width and height")
     parser.add_argument("-t", "--type", default = "DEL", choices = ["DEL", "INS"], help = "structural variant type (default: DEL)")
     parser.add_argument("-v", "--vcf", default = "data/fp.vcf", help = "user-supplied VCF file (default: data/fp.vcf)")
-
-    parser.add_argument("--normalize", default = True, action = argparse.BooleanOptionalAction, help = "normalize matrices to a fixed width and height (default: True)")
 
     return parser.parse_args()
 
