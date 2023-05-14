@@ -16,7 +16,7 @@ def parse_vcf_file(vcf_file, chromosome):
         contents = file.readlines()
 
         # chromosome_filter is a list of sigs of the form [(chromosome_number, start_position, length)]
-        chromosome_filter = [line for line in contents if line.startswith(chromosome)]
+        chromosome_filter = [line for line in contents if line[0 : line.find("\t")] == chromosome]
         chromosome_filter = [variant.strip().split("\t") for variant in chromosome_filter]
         chromosome_filter = [(variant[0], int(variant[1]), int(re.findall(r"SVLEN=-*?(\d+)", 
                               variant[-3])[0])) for variant in chromosome_filter]
@@ -325,6 +325,6 @@ def main():
         chromosome_threads[-1].start()
     
     for chromosome_thread in chromosome_threads:
-        chromosome_thread.join()        
+        chromosome_thread.join()
 
 main()
