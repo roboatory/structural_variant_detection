@@ -1,6 +1,7 @@
 import argparse
 import matplotlib
 import matplotlib.colors as colors
+import matplotlib.image as img
 import matplotlib.pyplot as plt
 import numpy as np
 import os
@@ -265,6 +266,21 @@ def visualize_matrix_encoding(images, variant_matrix, variant):
                                                          variant_end_position))
     plt.close()
 
+def generate_matrix_image(images, variant_matrix, variant):
+    chromosome = variant[0]
+    variant_start_position = variant[1]
+    variant_end_position = variant[1] + variant[2]
+    
+    image = np.zeros(tuple(list(variant_matrix.shape) + [3]), dtype = np.uint8)
+
+    for read_number, read in enumerate(variant_matrix):
+        for bp_number, bp in enumerate(read.flat):
+            if bp != 0:
+                image[read_number][bp_number] = [int((bp != 2) * 255), int((bp != 1) * 255), 0]
+    
+    img.imsave(images + "/matrices/{}_{}_{}.png".format(chromosome, variant_start_position, 
+                                                        variant_end_position), image)
+    
 def parse_args():
     parser = argparse.ArgumentParser(description = "intra-alignment deletion signature extraction")
 
@@ -298,7 +314,8 @@ def launch_chromosome_extraction(bam_file, chromosome, base_bed, base_images,
         intra_alignment_extraction(variant_type, bam_file, bed, variant)
         inter_alignment_extraction(variant_type, split_read_signatures, bed, variant)
         visualize_alignments(variant_type, images, bed, variant)
-        visualize_matrix_encoding(images, encode_variant_as_matrix(variant_type, bed, variant, normalize), variant)
+        # visualize_matrix_encoding(images, encode_variant_as_matrix(variant_type, bed, variant, normalize), variant)
+        generate_matrix_image(images, encode_variant_as_matrix(variant_type, bed, variant, normalize), variant)
 
 def main():
     args = parse_args()

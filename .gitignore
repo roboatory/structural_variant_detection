@@ -1,5 +1,11 @@
+# MacOS specific files
 .DS_Store
+
+# Genomic specific files
 *.bam
 *.bam.bai
 *.sam
 *.vcf
+
+# Relevant papers of interest
+papers/
