@@ -1,14 +1,13 @@
 import argparse
 import matplotlib
-import matplotlib.colors as colors
 import matplotlib.image as img
 import matplotlib.pyplot as plt
+from multiprocessing import Process
 import numpy as np
 import os
 import pandas as pd
 import pysam
 import re
-from threading import Thread
 
 matplotlib.use("agg")
 
@@ -210,7 +209,7 @@ def encode_variant_as_matrix(variant_type, bed, variant, normalize_by_padding = 
             np.bitwise_or(variant_matrix.setdefault(read[3], np.array(read_vector)), 
                           np.array(read_vector), out = variant_matrix[read[3]])
     
-    matrix = np.matrix(list(variant_matrix.values())).astype(float)
+    matrix = np.matrix(list(variant_matrix.values()))
 
     if normalize_by_padding:
         unnormalized_rows = np.shape(matrix)[0]
@@ -250,37 +249,47 @@ def encode_variant_as_matrix(variant_type, bed, variant, normalize_by_padding = 
 
     return matrix
 
-def visualize_matrix_encoding(images, variant_matrix, variant):
+def generate_encoding(images, variant_matrix, variant, encoding_format):
     chromosome = variant[0]
     variant_start_position = variant[1]
     variant_end_position = variant[1] + variant[2]
 
-    # white - no alignment, orange - intra-alignment, green - inter-alignment
-    color_map = colors.ListedColormap(["white", "orange", "green"])
+    if encoding_format == "plot":
+        image = np.zeros(tuple(list(variant_matrix.shape) + [3]), dtype = np.uint8)
 
-    plt.matshow(variant_matrix, cmap = color_map, vmin = 0., vmax = 2.)
-    plt.tick_params(left = False, bottom = False, top = False, 
-                    labelleft = False, labeltop = False)
+        for read_number, read in enumerate(variant_matrix):
+            for bp_number, bp in enumerate(read.flat):
+                if bp != 0:
+                    image[read_number][bp_number] = [int((bp != 2) * 255), int((bp != 1) * 255), 0]
 
-    plt.savefig(images + "/matrices/{}_{}_{}.png".format(chromosome, variant_start_position, 
-                                                         variant_end_position))
-    plt.close()
-
-def generate_matrix_image(images, variant_matrix, variant):
-    chromosome = variant[0]
-    variant_start_position = variant[1]
-    variant_end_position = variant[1] + variant[2]
+        img.imsave(images + "/matrices/{}_{}_{}.png".format(chromosome, variant_start_position, 
+                                                            variant_end_position), image)
     
-    image = np.zeros(tuple(list(variant_matrix.shape) + [3]), dtype = np.uint8)
+    else:
+        intra_encoding_counts = np.sum(np.where(variant_matrix == 1, variant_matrix, 0), axis = 0)
+        inter_encoding_counts = np.sum(np.where(variant_matrix == 2, variant_matrix, 0), axis = 0)
 
-    for read_number, read in enumerate(variant_matrix):
-        for bp_number, bp in enumerate(read.flat):
-            if bp != 0:
-                image[read_number][bp_number] = [int((bp != 2) * 255), int((bp != 1) * 255), 0]
-    
-    img.imsave(images + "/matrices/{}_{}_{}.png".format(chromosome, variant_start_position, 
-                                                        variant_end_position), image)
-    
+        image = np.zeros((max(max(intra_encoding_counts), max(inter_encoding_counts)) + 1, 
+                          variant_matrix.shape[1], 3), dtype = np.uint8)
+        
+        intra_encoding_counts = list(enumerate(intra_encoding_counts))
+        inter_encoding_counts = list(enumerate(inter_encoding_counts))
+
+        for column in range(variant_matrix.shape[1]):
+            intra_coordinate = intra_encoding_counts[column]
+            inter_coordinate = inter_encoding_counts[column]
+
+            if intra_coordinate[1] != 0:
+                image[intra_coordinate[1]][intra_coordinate[0]][0] = 255
+            
+            if inter_coordinate[1] != 0:
+                image[inter_coordinate[1]][inter_coordinate[0]][1] = 255
+        
+        image = np.flipud(image)
+
+        img.imsave(images + "/matrices/{}_{}_{}.png".format(chromosome, variant_start_position, 
+                                                            variant_end_position), image)
+
 def parse_args():
     parser = argparse.ArgumentParser(description = "intra-alignment deletion signature extraction")
 
@@ -288,6 +297,7 @@ def parse_args():
     parser.add_argument("-c", "--chromosomes", default = "chr21", help = "limits signature extraction to particular chromosomes; \
                                                                           specify as a comma separated list or using the keyword 'all' for the entire genome (default: chr21)")
     parser.add_argument("-d", "--bed", default = "data/bed", help = "output BED directory (default: data/bed)")
+    parser.add_argument("-f", "--format", default = "counts", choices = ["counts, plot"], help = "model input options (default: counts)")
     parser.add_argument("-i", "--images", default = "data/images", help = "output image directory (default: data/images)")
     parser.add_argument("-n", "--normalize", action = "store_true", help = "normalize matrices to a fixed width and height")
     parser.add_argument("-t", "--type", default = "DEL", choices = ["DEL", "INS"], help = "structural variant type (default: DEL)")
@@ -296,7 +306,13 @@ def parse_args():
     return parser.parse_args()
 
 def launch_chromosome_extraction(bam_file, chromosome, base_bed, base_images, 
-                                 variant_type, vcf_file, normalize, cache):
+                                 variant_type, vcf_file, normalize, encoding_format = "counts"):
+    sam_file = pysam.AlignmentFile(bam_file, "rb")
+    indexed_sam_file = pysam.IndexedReads(sam_file)
+    indexed_sam_file.build()
+
+    cache = [sam_file, indexed_sam_file]
+
     bed = os.path.join(base_bed, chromosome)
     images = os.path.join(base_images, chromosome)
 
@@ -314,8 +330,7 @@ def launch_chromosome_extraction(bam_file, chromosome, base_bed, base_images,
         intra_alignment_extraction(variant_type, bam_file, bed, variant)
         inter_alignment_extraction(variant_type, split_read_signatures, bed, variant)
         visualize_alignments(variant_type, images, bed, variant)
-        # visualize_matrix_encoding(images, encode_variant_as_matrix(variant_type, bed, variant, normalize), variant)
-        generate_matrix_image(images, encode_variant_as_matrix(variant_type, bed, variant, normalize), variant)
+        generate_encoding(images, encode_variant_as_matrix(variant_type, bed, variant, normalize), variant, encoding_format)
 
 def main():
     args = parse_args()
@@ -324,24 +339,20 @@ def main():
     chromosomes = (["chr{}".format(chromosome_number) for chromosome_number in range(1, 23)] 
                         if args.chromosomes == "all" else args.chromosomes.split(","))
     base_bed = args.bed
+    encoding_format = args.format
     base_images = args.images
     variant_type = args.type
     vcf_file = args.vcf
     normalize = args.normalize
 
-    sam_file = pysam.AlignmentFile(bam_file, "rb")
-    indexed_sam_file = pysam.IndexedReads(sam_file)
-    indexed_sam_file.build()
-
-    cache = [sam_file, indexed_sam_file]
-
-    chromosome_threads = []
+    chromosome_processes = []
     for chromosome in chromosomes:
-        chromosome_threads.append(Thread(target = launch_chromosome_extraction, args = (bam_file, chromosome, base_bed, base_images, 
-                                                                                        variant_type, vcf_file, normalize, cache)))
-        chromosome_threads[-1].start()
+        chromosome_processes.append(Process(target = launch_chromosome_extraction, args = (bam_file, chromosome, base_bed, base_images, 
+                                                                                           variant_type, vcf_file, normalize, encoding_format)))
+        chromosome_processes[-1].start()
     
-    for chromosome_thread in chromosome_threads:
-        chromosome_thread.join()
+    for chromosome_process in chromosome_processes:
+        chromosome_process.join()
 
-main()
+if __name__ == "__main__":
+    main()
