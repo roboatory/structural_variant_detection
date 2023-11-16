@@ -7,5 +7,10 @@
 *.sam
 *.vcf
 
-# Relevant papers of interest
+# SFS specific files
+data/SFS_signatures.index
+data/SFS_signatures.txt
+
+# Miscellaneous
 papers/
+slides/

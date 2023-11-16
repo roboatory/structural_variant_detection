@@ -291,7 +291,7 @@ def generate_encoding(images, variant_matrix, variant, encoding_format):
                                                             variant_end_position), image)
 
 def parse_args():
-    parser = argparse.ArgumentParser(description = "intra-alignment deletion signature extraction")
+    parser = argparse.ArgumentParser(description = "insertion & deletion signature extraction")
 
     parser.add_argument("-b", "--bam", default = "data/chr21.bam", help = "user-supplied BAM file; use the keyword 'all' for the entire genome (default: data/chr21.bam)")
     parser.add_argument("-c", "--chromosomes", default = "chr21", help = "limits signature extraction to particular chromosomes; \
